@@ -143,43 +143,98 @@ describe FaradayMiddleware::FollowRedirects do
     let(:all_cookies) { "#{cookies}; #{more_cookies}" }
 
     context "is :all" do
-      it "puts all cookies from the response into the next request" do
-        expect(connection(:cookies => :all) do |stub|
-          stub.get('/')           { [301, {'Location' => '/found', 'Cookies' => cookies }, ''] }
-          stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
-        end.get('/').env[:request_headers][:cookies]).to eq(cookies)
+      context "'Cookies' header" do
+        it "puts all cookies from the response into the next request" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/found', 'Cookies' => cookies }, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers][:cookies]).to eq(cookies)
+        end
+
+        it "not set cookies header on request when response has no cookies" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/found'}, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers].has_key?('Cookies')).to eq(false)
+        end
+
+        it "incrementally passes cookies from previous requests" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/passthru', 'Cookies' => cookies}, ''] }
+            stub.get('/passthru')   { [301, {'Location' => '/found', 'Cookies' => more_cookies}, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers][:cookies]).to eq(all_cookies)
+        end
+
+        context "is an array of cookie names" do
+          it "puts selected cookies from the response into the next request" do
+            expect(connection(:cookies => ['cookie2']) do |stub|
+              stub.get('/')           { [301, {'Location' => '/found', 'Cookies' => cookies }, ''] }
+              stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+            end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
+          end
+
+          it "incrementally passes the selected cookies from previous requests" do
+            expect(connection(:cookies => ['cookie2']) do |stub|
+              stub.get('/')           { [301, {'Location' => '/passthru', 'Cookies' => cookies}, ''] }
+              stub.get('/passthru')   { [301, {'Location' => '/found', 'Cookies' => more_cookies}, ''] }
+              stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+            end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
+          end
+        end
       end
 
-      it "not set cookies header on request when response has no cookies" do
-        expect(connection(:cookies => :all) do |stub|
-          stub.get('/')           { [301, {'Location' => '/found'}, ''] }
-          stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
-        end.get('/').env[:request_headers].has_key?('Cookies')).to eq(false)
-      end
+      context "'Set-Cookie' headers" do
+        let(:set_cookies) do
+          CGI::Cookie.parse(cookies).map do |key, values|
+            CGI::Cookie.new(key, *values).to_s
+          end
+        end
 
-      it "incrementally passes cookies from previous requests" do
-        expect(connection(:cookies => :all) do |stub|
-          stub.get('/')           { [301, {'Location' => '/passthru', 'Cookies' => cookies}, ''] }
-          stub.get('/passthru')   { [301, {'Location' => '/found', 'Cookies' => more_cookies}, ''] }
-          stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
-        end.get('/').env[:request_headers][:cookies]).to eq(all_cookies)
-      end
-    end
+        let(:set_more_cookies) do
+          CGI::Cookie.parse(more_cookies).map do |key, values|
+            CGI::Cookie.new(key, *values).to_s
+          end
+        end
 
-    context "is an array of cookie names" do
-      it "puts selected cookies from the response into the next request" do
-        expect(connection(:cookies => ['cookie2']) do |stub|
-          stub.get('/')           { [301, {'Location' => '/found', 'Cookies' => cookies }, ''] }
-          stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
-        end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
-      end
+        it "puts all cookies from the response into the next request" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/found', 'Set-Cookie' => set_cookies }, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers][:cookies]).to eq(cookies)
+        end
 
-      it "incrementally passes the selected cookies from previous requests" do
-        expect(connection(:cookies => ['cookie2']) do |stub|
-          stub.get('/')           { [301, {'Location' => '/passthru', 'Cookies' => cookies}, ''] }
-          stub.get('/passthru')   { [301, {'Location' => '/found', 'Cookies' => more_cookies}, ''] }
-          stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
-        end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
+        it "not set cookies header on request when response has no cookies" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/found'}, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers].has_key?('Cookies')).to eq(false)
+        end
+
+        it "incrementally passes cookies from previous requests" do
+          expect(connection(:cookies => :all) do |stub|
+            stub.get('/')           { [301, {'Location' => '/passthru', 'Set-Cookie' => set_cookies}, ''] }
+            stub.get('/passthru')   { [301, {'Location' => '/found', 'Set-Cookie' => set_more_cookies}, ''] }
+            stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+          end.get('/').env[:request_headers][:cookies]).to eq(all_cookies)
+        end
+
+        context "is an array of cookie names" do
+          it "puts selected cookies from the response into the next request" do
+            expect(connection(:cookies => ['cookie2']) do |stub|
+              stub.get('/')           { [301, {'Location' => '/found', 'Cookies' => cookies }, ''] }
+              stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+            end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
+          end
+
+          it "incrementally passes the selected cookies from previous requests" do
+            expect(connection(:cookies => ['cookie2']) do |stub|
+              stub.get('/')           { [301, {'Location' => '/passthru', 'Cookies' => cookies}, ''] }
+              stub.get('/passthru')   { [301, {'Location' => '/found', 'Cookies' => more_cookies}, ''] }
+              stub.get('/found')      { [200, {'Content-Type' => 'text/plain'}, ''] }
+            end.get('/').env[:request_headers][:cookies]).to eq('cookie2=1234567')
+          end
+        end
       end
     end
   end

@@ -1,6 +1,7 @@
 require 'faraday'
 require 'set'
 
+
 module FaradayMiddleware
   # Public: Exception thrown when the maximum amount of requests is exceeded.
   class RedirectLimitReached < Faraday::Error::ClientError
@@ -49,6 +50,8 @@ module FaradayMiddleware
 
       @convert_to_get = Set.new [303]
       @convert_to_get << 301 << 302 unless standards_compliant?
+
+      @existing_cookies = {}
     end
 
     def call(env)
@@ -106,8 +109,54 @@ module FaradayMiddleware
 
     def keep_cookies(env)
       cookies = @options.fetch(:cookies, [])
-      response_cookies = override_existing_cookies(env[:response_headers][:cookies])
-      cookies == :all ? response_cookies : selected_request_cookies(response_cookies)
+
+      set_cookies = if env[:response_headers]["Set-Cookie"]
+        indexed_by_name = {}
+
+        env[:response_headers]["Set-Cookie"].split(", ").each do |cookie_string|
+          # CGI::Cookie#parse returns a Hash where each value is a CGI::Cookie
+          # object that serializes to the same thing.
+          # So just grab the 1st value and work with that.
+          cookie = CGI::Cookie.parse(cookie_string).values[0]
+          indexed_by_name[cookie.name] = cookie
+        end
+
+        indexed_by_name
+      end
+
+      response_cookies = if env[:response_headers][:cookies]
+        CGI::Cookie.parse env[:response_headers][:cookies]
+      end
+
+      all_cookies = if set_cookies && response_cookies
+        response_cookies.merge set_cookies
+      elsif set_cookies
+        set_cookies
+      elsif response_cookies
+        response_cookies
+      else
+        {}
+      end
+
+      all_cookies = override_existing_cookies all_cookies
+
+      returned_string = if cookies == :all
+        all_cookies
+      else
+        sliced_hash = {}
+        cookies.each do |cookie_name|
+          if all_cookies[cookie_name]
+            sliced_hash[cookie_name] = all_cookies[cookie_name]
+          end
+        end
+        sliced_hash
+      end.values.map do |cookie|
+        "#{cookie.name}=#{cookie.value[0]}"
+      end.join("; ")
+
+      unless returned_string.empty?
+        returned_string
+      end
     end
 
     def selected_request_cookies(cookies)
@@ -123,28 +172,8 @@ module FaradayMiddleware
       end
     end
 
-    def override_existing_cookies new_cookies
-      @existing_cookies = if @existing_cookies
-        parsed_existing_cookies = parse_cookies_string @existing_cookies
-        parsed_new_cookies = parse_cookies_string new_cookies
-
-        cookies = []
-        parsed_existing_cookies.merge(parsed_new_cookies).each_pair do |name, value|
-          cookies << "#{name}=#{value}"
-        end
-        cookies.join "; "
-      else
-        new_cookies
-      end
-    end
-
-    def parse_cookies_string cookies
-      parsed_cookies = {}
-      cookies.split("; ").each do |cookie|
-        cookie_split = cookie.split "="
-        parsed_cookies[cookie_split[0]] = cookie_split[1]
-      end
-      parsed_cookies
+    def override_existing_cookies new_cookies_hash
+      @existing_cookies.merge! new_cookies_hash
     end
 
     def standards_compliant?
